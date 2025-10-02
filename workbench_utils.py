@@ -1938,7 +1938,6 @@ def check_input(config, args):
         "get_media_report_from_view",
         "update_terms",
         "create_redirects",
-        "update_filenames",
         "add_alt_text",
         "update_alt_text",
         "run_scripts",
@@ -1946,7 +1945,7 @@ def check_input(config, args):
     joiner = ", "
     if config["task"] not in tasks:
         message = (
-            '"task" in your configuration file must be one of "create", "update", "delete", "add_alt_text", "update_alt_text", "update_filenames"'
+            '"task" in your configuration file must be one of "create", "update", "delete", "add_alt_text", "update_alt_text", '
             + '"add_media", "update_media", "update_media_by_node", "delete_media", "delete_media_by_node", "create_from_files", "create_terms", "export_csv", "get_data_from_view", "update_terms", "create_redirects", or "run_scripts".'
         )
         logging.error(message)
@@ -3567,6 +3566,7 @@ def check_input(config, args):
                 # Check for files that cannot be found.
                 if (
                     not file_check_row["file"].startswith("http")
+                    and not file_check_row["file"].startswith("remotefile:")
                     and len(file_check_row["file"].strip()) > 0
                 ):
                     if os.path.isabs(file_check_row["file"]):
@@ -3705,6 +3705,11 @@ def check_input(config, args):
                                         config, file_check_row["file"]
                                     )
                                     extension = extension.lstrip(".")
+                            elif file_check_row["file"].startswith("remotefile:"):
+                                # For server-side files (remotefile:), extract the file path
+                                server_filepath = file_check_row["file"].replace("remotefile:", "", 1).strip()
+                                extension = os.path.splitext(server_filepath)[1]
+                                extension = extension.lstrip(".").lower()
                             else:
                                 extension = os.path.splitext(file_check_row["file"])[1]
                                 extension = extension.lstrip(".").lower()
@@ -5615,23 +5620,25 @@ def create_media(
             logging.error(message)
             return False
 
-    if check_file_exists(config, filename) is False:
-        if file_fieldname is None:
-            message = (
-                'Media not created because file "' + filename + '" could not be found.'
-            )
-        else:
-            message = (
-                'Media not created because file "'
-                + filename
-                + '" identified in field "'
-                + file_fieldname
-                + '" in CSV row with ID "'
-                + csv_row[config["id_field"]]
-                + '" could not be found.'
-            )
-        logging.error(message)
-        return False
+    # Skip file existence check for remotefile:
+    if not filename.startswith("remotefile:"):
+        if check_file_exists(config, filename) is False:
+            if file_fieldname is None:
+                message = (
+                    'Media not created because file "' + filename + '" could not be found.'
+                )
+            else:
+                message = (
+                    'Media not created because file "'
+                    + filename
+                    + '" identified in field "'
+                    + file_fieldname
+                    + '" in CSV row with ID "'
+                    + csv_row[config["id_field"]]
+                    + '" could not be found.'
+                )
+            logging.error(message)
+            return False
 
     # Importing the workbench_fields module at the top of this module with the
     # rest of the imports causes a circular import exception, so we do it here.
@@ -5647,7 +5654,50 @@ def create_media(
         # file_result must be an integer.
         file_result = -1
     else:
-        file_result = create_file(config, filename, file_fieldname, csv_row, node_id)
+        # Check if this is a remotefile: type file (server-side import via API)
+        if filename.startswith("remotefile:"):
+            # Extract the server-side filepath
+            server_filepath = filename.replace("remotefile:", "", 1).strip()
+
+            # Call the Drupal endpoint to import the file
+            import_endpoint = "/islandora_workbench_integration/import_file"
+            import_headers = {"Content-Type": "application/json"}
+            import_body = {"filepath": server_filepath}
+
+            try:
+                import_response = issue_request(
+                    config, "POST", import_endpoint, import_headers, import_body
+                )
+
+                if import_response.status_code == 200:
+                    import_data = json.loads(import_response.text)
+                    file_result = int(import_data["file_id"])
+                    # Update filename to the returned file_name for media creation
+                    filename = import_data["file_name"]
+                    logging.info(
+                        'File entity created via remotefile endpoint: file_id=%s, file_name=%s, file_uri=%s',
+                        import_data["file_id"],
+                        import_data["file_name"],
+                        import_data["file_uri"]
+                    )
+                else:
+                    logging.error(
+                        'Remote file import failed for "%s", POST request to "%s" returned HTTP status %s with response: %s',
+                        server_filepath,
+                        import_endpoint,
+                        import_response.status_code,
+                        import_response.text
+                    )
+                    return False
+            except Exception as e:
+                logging.error(
+                    'Exception during remote file import for "%s": %s',
+                    server_filepath,
+                    str(e)
+                )
+                return False
+        else:
+            file_result = create_file(config, filename, file_fieldname, csv_row, node_id)
 
     if filename.startswith("http"):
         if file_result > 0:
@@ -10427,6 +10477,68 @@ def check_file_exists(config, filename):
         f'Cannot determine if file "{filename}" exists, assuming it does not.'
     )
     return False
+
+
+def check_serverfile_exists(config, filename):
+    """Checks if a server-side file (remotefile:) exists by calling the Drupal API.
+
+    Parameters
+    ----------
+    config : dict
+        The configuration settings defined by workbench_config.get_config().
+    filename: string
+        The filename or path with remotefile: prefix.
+    Returns
+    -------
+    boolean
+        True if the file exists on the server, false if not.
+    """
+    if not filename.startswith("remotefile:"):
+        logging.warning(
+            f'check_serverfile_exists called with non-remotefile path: "{filename}"'
+        )
+        return False
+
+    # Extract the server-side filepath
+    server_filepath = filename.replace("remotefile:", "", 1).strip()
+
+    # Call the Drupal endpoint to check file existence
+    check_endpoint = "/islandora_workbench_integration/check_file"
+    check_headers = {"Content-Type": "application/json"}
+    check_body = {"filepath": server_filepath}
+
+    try:
+        check_response = issue_request(
+            config, "POST", check_endpoint, check_headers, check_body
+        )
+
+        if check_response.status_code == 200:
+            response_data = json.loads(check_response.text)
+            file_exists = response_data.get("exists", False)
+            if file_exists:
+                logging.debug(
+                    f'Server-side file verified to exist: "{server_filepath}"'
+                )
+            else:
+                logging.warning(
+                    f'Server-side file does not exist: "{server_filepath}"'
+                )
+            return file_exists
+        else:
+            logging.error(
+                'Server file check failed for "%s", POST request to "%s" returned HTTP status %s',
+                server_filepath,
+                check_endpoint,
+                check_response.status_code
+            )
+            return False
+    except Exception as e:
+        logging.error(
+            'Exception during server file check for "%s": %s',
+            server_filepath,
+            str(e)
+        )
+        return False
 
 
 def get_preprocessed_file_path(

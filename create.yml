@@ -1,0 +1,8 @@
+task: create
+host: https://islandora.dev
+username: admin
+password: password
+input_dir: ""
+input_csv: create.csv
+allow_missing_files: True
+secure_ssl_only: false

@@ -277,6 +277,10 @@ class WorkbenchConfig:
             "adaptive_pause_threshold": 2,
             "log_response_time_sample": False,
             "log_request_url": False,
+            "server_side_files_enabled": False,
+            "server_side_files_path": "",
+            "server_side_files_allowed_extensions": ["jpg", "jpeg", "png", "gif", "pdf", "mp4", "mp3", "wav", "doc", "docx", "txt"],
+            "server_side_files_mode": "move",  # 'move' or 'copy'
             "log_json": False,
             "log_response_body": False,
             "log_response_status_code": False,

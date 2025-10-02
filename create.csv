@@ -1,0 +1,3 @@
+file,title,id,field_model,field_description
+remotefile:/var/www/drupal/web/sites/default/files/file_attach/video.mp4,Mp4,01,Collection,mp4 test
+remotefile:/var/www/drupal/web/sites/default/files/file_attach/photo2.jpg,jpg,03,Collection,jpg test
